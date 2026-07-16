@@ -180,17 +180,17 @@ distube.on('addSong', (queue, song) => {
   queue.textChannel?.send(`✅ Agregado a la cola: **${song.name}** — ${song.formattedDuration}`);
 });
 
-distube.on('error', (channel, error) => {
+distube.on('error', (error, queue) => {
   console.error(error);
-  channel?.send('❌ Ocurrió un error con la reproducción.');
+  queue?.textChannel?.send('❌ Ocurrió un error con la reproducción.');
 });
 
 distube.on('finish', (queue) => {
   queue.textChannel?.send('🏁 Se terminó la cola.');
 });
 
-distube.on('empty', (queue) => {
-  queue.textChannel?.send('👋 Me quedé solo en el canal de voz, me desconecto.');
+distube.on('disconnect', (queue) => {
+  queue.textChannel?.send('👋 Me desconecté del canal de voz.');
 });
 
 client.login(process.env.DISCORD_TOKEN);
