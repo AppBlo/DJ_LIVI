@@ -7,6 +7,8 @@ const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 const { LavalinkManager } = require('lavalink-client');
 const { execFile } = require('child_process');
 const dj = require('./dj');
+const djAI = require('./dj-ai');
+const elevenlabs = require('./elevenlabs');
 
 const PREFIX = process.env.PREFIX || '!';
 const FLOWERY_VOICE = process.env.FLOWERY_VOICE || 'Sabela';
@@ -112,27 +114,45 @@ function isDjEnabled(guildId) {
 }
 
 /**
- * Pide a Lavalink (vía Flowery TTS) el audio del texto dado, y lo agrega
- * a la cola justo antes del track real.
+ * Arma y encola el anuncio del DJ para el track dado.
  *
- * Usamos el link HTTP directo de la API de Flowery (en vez del atajo
- * "ftts://") porque ese atajo rompe con texto que tiene espacios, comas o
- * paréntesis (bug conocido de cómo LavaSrc arma la URI internamente).
+ * Camino principal: Claude arma una frase acorde a la onda real de la
+ * canción (con una etiqueta de emoción), y ElevenLabs la locuta con una voz
+ * natural. Si cualquiera de los dos pasos falla (créditos agotados, error de
+ * red, etc.), caemos en silencio al camino de respaldo: una frase fija de
+ * plantilla, locutada con Flowery TTS (gratis, siempre disponible).
  */
-async function queueDjIntro(player, text, requester) {
-  const url = `https://api.flowery.pw/v1/tts?${new URLSearchParams({
-    text,
-    voice: FLOWERY_VOICE,
-  })}`;
+async function queueDjIntro(player, track, requester) {
+  try {
+    const frase = await djAI.generarFraseConIA({ title: cleanTitle(track.title), author: track.author });
+    const filepath = await elevenlabs.generarAudioElevenLabs(frase);
+    const result = await player.search({ query: filepath }, requester);
+    if (result?.tracks?.length) {
+      player.queue.add(result.tracks[0]);
+      return;
+    }
+  } catch (err) {
+    console.error('DJ con IA/ElevenLabs falló, uso el respaldo (Flowery):', err.message);
+  }
 
-  const result = await player.search({ query: url }, requester);
-  if (result?.tracks?.length) {
-    player.queue.add(result.tracks[0]);
+  try {
+    const textoRespaldo = dj.buildIntroText({ title: cleanTitle(track.title), author: track.author });
+    const url = `https://api.flowery.pw/v1/tts?${new URLSearchParams({
+      text: textoRespaldo,
+      voice: FLOWERY_VOICE,
+    })}`;
+    const result = await player.search({ query: url }, requester);
+    if (result?.tracks?.length) {
+      player.queue.add(result.tracks[0]);
+    }
+  } catch (err) {
+    console.error('El respaldo del DJ (Flowery) también falló:', err);
   }
 }
 
 client.once('ready', () => {
   console.log(`✅ Conectado como ${client.user.tag}`);
+  elevenlabs.limpiarArchivosViejos();
   client.lavalink.init({ id: client.user.id, username: client.user.username });
 });
 
@@ -168,6 +188,8 @@ client.on('messageCreate', async (message) => {
       }
       if (!player.connected) await player.connect();
 
+      const isUrl = /^https?:\/\//i.test(query);
+
       // Con OAuth + remoteCipher configurados en Lavalink, ya no necesitamos
       // pasar por yt-dlp/cookies: dejamos que Lavalink resuelva todo directo,
       // tanto búsquedas de texto y links de YouTube como links de Spotify
@@ -180,10 +202,15 @@ client.on('messageCreate', async (message) => {
       const isPlaylist = !!result.playlist;
       const tracksToQueue = isPlaylist ? result.tracks.slice(0, 25) : [result.tracks[0]];
 
+      // Si fue una búsqueda de texto (no un link), usamos lo que el usuario
+      // escribió como título — es más prolijo que el título crudo del video
+      // que encontramos, que puede traer basura tipo "(Video Oficial)".
+      if (!isPlaylist && !isUrl) {
+        tracksToQueue[0].info.title = query.replace(/\b\w/g, (c) => c.toUpperCase());
+      }
+
       if (isDjEnabled(guildId)) {
-        const cleanInfo = { ...tracksToQueue[0].info, title: cleanTitle(tracksToQueue[0].info.title) };
-        const introText = dj.buildIntroText(cleanInfo);
-        await queueDjIntro(player, introText, message.author);
+        await queueDjIntro(player, tracksToQueue[0].info, message.author);
       }
 
       player.queue.add(tracksToQueue);
@@ -274,7 +301,7 @@ client.lavalink.on('trackStart', (player, track) => {
   const channel = client.channels.cache.get(player.textChannelId);
   // No anunciamos los clips del propio DJ, ni los reintentos silenciosos
   // (solo el primer intento de cada canción real).
-  if (track.info.sourceName === 'flowerytts') return;
+  if (track.info.sourceName === 'flowerytts' || track.info.sourceName === 'local') return;
   if (track.userData?.intento) return;
   channel?.send(`🎶 Sonando ahora: **${cleanTitle(track.info.title)}** — ${track.info.author}`);
 });
