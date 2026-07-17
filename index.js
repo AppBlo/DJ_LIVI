@@ -419,14 +419,14 @@ client.lavalink.on('trackError', async (player, track, payload) => {
 
   const yaProbadoYtMusic = track?.userData?.intento === 'ytmusic';
   const yaProbadoYtDlp = track?.userData?.intento === 'ytdlp';
-  const yaProbadoSoundcloud = track?.userData?.intento === 'soundcloud';
 
-  // Nivel 1.5: otra fuente dentro de YouTube (YouTube Music), por si el
-  // video puntual que encontró está bloqueado pero el mismo tema en YT Music no.
-  if (!yaProbadoYtMusic && !yaProbadoYtDlp && !yaProbadoSoundcloud) {
+  // Nivel 1.5: otra fuente dentro de YouTube (YouTube Music) buscando la
+  // versión "lyrics" — suele ser un upload de fan (no del sello), full
+  // length y sin las restricciones del video oficial.
+  if (!yaProbadoYtMusic && !yaProbadoYtDlp) {
     try {
       const ytMusicResult = await player.search(
-        { query: `ytmsearch:${track.info.title} ${track.info.author}` },
+        { query: `ytmsearch:${track.info.title} ${track.info.author} lyrics` },
         track.requester,
       );
       if (ytMusicResult?.tracks?.length) {
@@ -442,10 +442,11 @@ client.lavalink.on('trackError', async (player, track, payload) => {
     }
   }
 
-  // Nivel 2: yt-dlp + cookies (silencioso, sin avisar en el chat).
-  if (!yaProbadoYtDlp && !yaProbadoSoundcloud) {
+  // Nivel 2, último recurso: yt-dlp + cookies, también con "lyrics" sumado
+  // a la búsqueda (silencioso, sin avisar en el chat).
+  if (!yaProbadoYtDlp) {
     try {
-      const resolved = await resolveWithYtDlp(`${track.info.title} ${track.info.author}`);
+      const resolved = await resolveWithYtDlp(`${track.info.title} ${track.info.author} lyrics`);
       if (resolved) {
         const ytDlpResult = await player.search({ query: resolved.url }, track.requester);
         if (ytDlpResult?.tracks?.length) {
@@ -461,26 +462,6 @@ client.lavalink.on('trackError', async (player, track, payload) => {
       }
     } catch (err) {
       console.error('Error en el respaldo de yt-dlp:', err);
-    }
-  }
-
-  // Nivel 3, último recurso: SoundCloud (silencioso también).
-  if (!yaProbadoSoundcloud) {
-    try {
-      const fallbackResult = await player.search(
-        { query: `scsearch:${track.info.title} ${track.info.author}` },
-        track.requester,
-      );
-      if (fallbackResult?.tracks?.length) {
-        const fallbackTrack = fallbackResult.tracks[0];
-        fallbackTrack.userData = { ...fallbackTrack.userData, intento: 'soundcloud' };
-        player.queue.add(fallbackTrack, 0);
-        if (!player.playing) await player.play();
-        terminarReintento();
-        return;
-      }
-    } catch (err) {
-      console.error('Error en el respaldo de SoundCloud:', err);
     }
   }
 
