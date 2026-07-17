@@ -1,22 +1,15 @@
 {
   "name": "dj-discord-bot",
-  "version": "1.0.0",
-  "description": "Bot de música para Discord con locutor DJ tipo Spotify AI DJ",
+  "version": "2.0.0",
+  "description": "Bot de música para Discord con Lavalink y locutor DJ (Flowery TTS)",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "@discordjs/opus": "^0.9.0",
-    "@discordjs/voice": "^0.18.0",
-    "@distube/spotify": "^2.0.2",
-    "@distube/youtube": "^1.0.4",
     "discord.js": "^14.15.3",
-    "distube": "^5.2.3",
     "dotenv": "^16.4.5",
-    "ffmpeg-static": "^5.2.0",
-    "libsodium-wrappers": "^0.8.4",
-    "node-gtts": "^2.0.2"
+    "lavalink-client": "^2.10.3"
   }
 }

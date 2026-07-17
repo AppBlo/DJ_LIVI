@@ -1,21 +1,14 @@
 // index.js
-// Bot de música para Discord con locutor DJ (TTS) estilo Spotify AI DJ.
+// Bot de música para Discord usando Lavalink (en vez de DisTube) + locutor DJ
+// con Flowery TTS (integrado en Lavalink vía el plugin LavaSrc).
 
 require('dotenv').config();
 const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
-const { DisTube } = require('distube');
-const { SpotifyPlugin } = require('@distube/spotify');
-const { YouTubePlugin } = require('@distube/youtube');
-const {
-  createAudioPlayer,
-  createAudioResource,
-  AudioPlayerStatus,
-  StreamType,
-} = require('@discordjs/voice');
-const fs = require('fs');
+const { LavalinkManager } = require('lavalink-client');
 const dj = require('./dj');
 
 const PREFIX = process.env.PREFIX || '!';
+const FLOWERY_VOICE = process.env.FLOWERY_VOICE || 'Sabela';
 
 const client = new Client({
   intents: [
@@ -26,10 +19,36 @@ const client = new Client({
   ],
 });
 
-const distube = new DisTube(client, {
-  plugins: [new SpotifyPlugin(), new YouTubePlugin()],
-  emitNewSongOnly: true,
+client.lavalink = new LavalinkManager({
+  nodes: [
+    {
+      authorization: process.env.LAVALINK_PASSWORD,
+      host: process.env.LAVALINK_HOST || 'localhost',
+      port: Number(process.env.LAVALINK_PORT) || 2333,
+      id: 'main-node',
+      secure: false,
+    },
+  ],
+  sendToShard: (guildId, payload) => {
+    const guild = client.guilds.cache.get(guildId);
+    if (guild) guild.shard.send(payload);
+  },
+  autoSkip: true,
+  client: {
+    id: process.env.CLIENT_ID,
+    username: 'DJ LIVI',
+  },
+  playerOptions: {
+    defaultSearchPlatform: 'ytsearch',
+    onEmptyQueue: {
+      destroyAfterMs: 5 * 60 * 1000, // se va del canal si queda solo 5 min
+    },
+  },
 });
+
+// Reenviamos los eventos crudos del gateway a Lavalink (necesario para que
+// sepa cuándo el bot se conectó/movió de canal de voz).
+client.on('raw', (d) => client.lavalink.sendRawData(d));
 
 // Guardamos, por servidor (guildId), si el DJ está activo o no.
 const djEnabledByGuild = new Map();
@@ -38,41 +57,34 @@ function isDjEnabled(guildId) {
 }
 
 /**
- * Reproduce un clip de TTS interrumpiendo momentáneamente la canción actual.
- * Truco: DisTube mantiene su propia conexión de voz en `queue.voice`. Le
- * "robamos" la suscripción para meter el audio del DJ y se la devolvemos
- * cuando termina de hablar.
+ * Pide a Lavalink (vía Flowery TTS) el audio del texto dado, y lo agrega
+ * a la cola justo antes del track real.
  */
-function playTtsOverQueue(queue, filepath) {
-  return new Promise((resolve) => {
-    const connection = queue.voice.connection;
-    const originalPlayer = queue.voice.audioPlayer;
-
-    const ttsPlayer = createAudioPlayer();
-    const resource = createAudioResource(filepath, {
-      inputType: StreamType.Arbitrary,
-    });
-
-    connection.subscribe(ttsPlayer);
-    ttsPlayer.play(resource);
-
-    ttsPlayer.on(AudioPlayerStatus.Idle, () => {
-      // Devolvemos la conexión a DisTube para que siga con la canción.
-      connection.subscribe(originalPlayer);
-      fs.unlink(filepath, () => {});
-      resolve();
-    });
-
-    ttsPlayer.on('error', () => {
-      connection.subscribe(originalPlayer);
-      resolve();
-    });
-  });
+async function queueDjIntro(player, text, requester) {
+  const result = await player.search(
+    {
+      query: text,
+      source: 'ftts',
+      extraQueryUrlParams: new URLSearchParams({ voice: FLOWERY_VOICE }),
+    },
+    requester,
+  );
+  if (result?.tracks?.length) {
+    player.queue.add(result.tracks[0]);
+  }
 }
 
 client.once('ready', () => {
   console.log(`✅ Conectado como ${client.user.tag}`);
-  dj.cleanupOldFiles();
+  client.lavalink.init({ id: client.user.id, username: client.user.username });
+});
+
+client.lavalink.nodeManager.on('connect', (node) => {
+  console.log(`🎧 Conectado al nodo de Lavalink "${node.id}"`);
+});
+
+client.lavalink.nodeManager.on('error', (node, error) => {
+  console.error(`❌ Error en el nodo de Lavalink "${node.id}":`, error.message);
 });
 
 client.on('messageCreate', async (message) => {
@@ -88,57 +100,91 @@ client.on('messageCreate', async (message) => {
       const voiceChannel = message.member.voice.channel;
       if (!voiceChannel) return message.reply('Primero conectate a un canal de voz.');
 
-      distube.play(voiceChannel, query, {
-        textChannel: message.channel,
-        member: message.member,
-      });
+      let player = client.lavalink.getPlayer(guildId);
+      if (!player) {
+        player = client.lavalink.createPlayer({
+          guildId,
+          voiceChannelId: voiceChannel.id,
+          textChannelId: message.channel.id,
+          selfDeaf: true,
+        });
+      }
+      if (!player.connected) await player.connect();
+
+      const result = await player.search({ query }, message.author);
+
+      if (!result || !result.tracks?.length) {
+        return message.reply('No encontré ningún resultado para eso.');
+      }
+
+      const isPlaylist = !!result.playlist;
+      const tracksToAdd = isPlaylist ? result.tracks : [result.tracks[0]];
+
+      if (isDjEnabled(guildId)) {
+        // Anunciamos solo el primer tema (si es playlist, no locuteamos cada uno).
+        const introText = dj.buildIntroText(tracksToAdd[0].info);
+        await queueDjIntro(player, introText, message.author);
+      }
+
+      player.queue.add(tracksToAdd);
+      message.reply(
+        isPlaylist
+          ? `✅ Agregados **${tracksToAdd.length}** temas de la playlist.`
+          : `✅ Agregado a la cola: **${tracksToAdd[0].info.title}**`,
+      );
+
+      if (!player.playing && !player.paused) await player.play();
     }
 
     else if (command === 'skip') {
-      const queue = distube.getQueue(message);
-      if (!queue) return message.reply('No hay nada sonando.');
-      await queue.skip();
+      const player = client.lavalink.getPlayer(guildId);
+      if (!player) return message.reply('No hay nada sonando.');
+      await player.skip();
       message.reply('⏭️ Siguiente tema.');
     }
 
     else if (command === 'stop') {
-      const queue = distube.getQueue(message);
-      if (!queue) return message.reply('No hay nada sonando.');
-      queue.stop();
-      message.reply('⏹️ Corté la música.');
+      const player = client.lavalink.getPlayer(guildId);
+      if (!player) return message.reply('No hay nada sonando.');
+      await player.destroy();
+      message.reply('⏹️ Corté la música y me fui del canal.');
     }
 
     else if (command === 'pause') {
-      const queue = distube.getQueue(message);
-      if (!queue) return message.reply('No hay nada sonando.');
-      queue.pause();
+      const player = client.lavalink.getPlayer(guildId);
+      if (!player) return message.reply('No hay nada sonando.');
+      await player.pause();
       message.reply('⏸️ Pausado.');
     }
 
     else if (command === 'resume') {
-      const queue = distube.getQueue(message);
-      if (!queue) return message.reply('No hay nada sonando.');
-      queue.resume();
+      const player = client.lavalink.getPlayer(guildId);
+      if (!player) return message.reply('No hay nada sonando.');
+      await player.resume();
       message.reply('▶️ Reanudado.');
     }
 
     else if (command === 'volume' || command === 'vol') {
-      const queue = distube.getQueue(message);
-      if (!queue) return message.reply('No hay nada sonando.');
+      const player = client.lavalink.getPlayer(guildId);
+      if (!player) return message.reply('No hay nada sonando.');
       const vol = parseInt(args[0], 10);
       if (isNaN(vol)) return message.reply('Usá `!volume 50` (0-100).');
-      queue.setVolume(vol);
+      await player.setVolume(vol);
       message.reply(`🔊 Volumen: ${vol}%`);
     }
 
     else if (command === 'queue' || command === 'q') {
-      const queue = distube.getQueue(message);
-      if (!queue) return message.reply('No hay nada en la cola.');
-      const list = queue.songs
-        .map((s, i) => `${i === 0 ? '▶️' : `${i}.`} ${s.name} — ${s.formattedDuration}`)
-        .slice(0, 15)
-        .join('\n');
-      const embed = new EmbedBuilder().setTitle('Cola de reproducción').setDescription(list).setColor(0x1db954);
+      const player = client.lavalink.getPlayer(guildId);
+      if (!player || (!player.queue.current && !player.queue.tracks.length)) {
+        return message.reply('No hay nada en la cola.');
+      }
+      const lines = [];
+      if (player.queue.current) lines.push(`▶️ ${player.queue.current.info.title}`);
+      player.queue.tracks.slice(0, 14).forEach((t, i) => lines.push(`${i + 1}. ${t.info.title}`));
+      const embed = new EmbedBuilder()
+        .setTitle('Cola de reproducción')
+        .setDescription(lines.join('\n'))
+        .setColor(0x1db954);
       message.reply({ embeds: [embed] });
     }
 
@@ -160,37 +206,22 @@ client.on('messageCreate', async (message) => {
   }
 });
 
-// Cada vez que arranca una canción nueva, si el DJ está activo, la anunciamos.
-distube.on('playSong', async (queue, song) => {
-  if (!isDjEnabled(queue.textChannel?.guildId)) return;
-
-  try {
-    queue.pause();
-    const text = dj.buildIntroText(song);
-    const filepath = await dj.generateTTS(text);
-    await playTtsOverQueue(queue, filepath);
-    queue.resume();
-  } catch (err) {
-    console.error('Error en el anuncio del DJ:', err);
-    if (queue.paused) queue.resume();
+client.lavalink.on('trackStart', (player, track) => {
+  const channel = client.channels.cache.get(player.textChannelId);
+  // No anunciamos los clips del propio DJ (source flowery), solo canciones reales.
+  if (track.info.sourceName !== 'flowerytts') {
+    channel?.send(`🎶 Sonando ahora: **${track.info.title}** — ${track.info.author}`);
   }
 });
 
-distube.on('addSong', (queue, song) => {
-  queue.textChannel?.send(`✅ Agregado a la cola: **${song.name}** — ${song.formattedDuration}`);
+client.lavalink.on('queueEnd', (player) => {
+  const channel = client.channels.cache.get(player.textChannelId);
+  channel?.send('🏁 Se terminó la cola.');
 });
 
-distube.on('error', (error, queue) => {
-  console.error(error);
-  queue?.textChannel?.send('❌ Ocurrió un error con la reproducción.');
-});
-
-distube.on('finish', (queue) => {
-  queue.textChannel?.send('🏁 Se terminó la cola.');
-});
-
-distube.on('disconnect', (queue) => {
-  queue.textChannel?.send('👋 Me desconecté del canal de voz.');
+client.lavalink.on('playerDisconnect', (player) => {
+  const channel = client.channels.cache.get(player.textChannelId);
+  channel?.send('👋 Me desconecté del canal de voz.');
 });
 
 client.login(process.env.DISCORD_TOKEN);
