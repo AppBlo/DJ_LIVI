@@ -41,27 +41,50 @@ function cleanTitle(title) {
 function resolveWithYtDlp(query) {
   return new Promise((resolve) => {
     const isUrl = /^https?:\/\//i.test(query);
-    const target = isUrl ? query : `ytsearch1:${query}`;
+    const target = isUrl ? query : `ytsearch5:${query}`;
+
+    const args = [
+      target,
+      '-f', 'bestaudio',
+      '--cookies', require('path').join(__dirname, 'cookies.txt'),
+      '--print', '%(url)s|||%(title)s|||%(uploader)s|||%(duration)s',
+    ];
+    if (isUrl) args.splice(1, 0, '--no-playlist');
 
     execFile(
       'yt-dlp',
-      [
-        target,
-        '-f', 'bestaudio',
-        '--no-playlist',
-        '--cookies', require('path').join(__dirname, 'cookies.txt'),
-        '--print', '%(url)s|||%(title)s|||%(uploader)s',
-      ],
-      { timeout: 20000, maxBuffer: 1024 * 1024 },
+      args,
+      { timeout: 25000, maxBuffer: 1024 * 1024 * 4 },
       (err, stdout, stderr) => {
         if (err || !stdout?.trim()) {
           console.error('[yt-dlp] Error:', err?.message || 'sin stdout');
           if (stderr) console.error('[yt-dlp] stderr:', stderr);
           return resolve(null);
         }
-        const [url, title, author] = stdout.trim().split('|||');
-        if (!url) return resolve(null);
-        resolve({ url, title: title || query, author: author || 'YouTube' });
+
+        const candidatos = stdout
+          .trim()
+          .split('\n')
+          .map((linea) => {
+            const [url, title, author, duration] = linea.split('|||');
+            return { url, title, author, duracion: parseFloat(duration) || Infinity };
+          })
+          .filter((c) => c.url);
+
+        if (!candidatos.length) return resolve(null);
+
+        // Si fue una búsqueda de texto, preferimos el candidato de duración
+        // "normal" (1-10 min) para evitar videos extendidos con intros
+        // largas (tipo "short films" de los 90) o clips demasiado cortos.
+        let elegido = candidatos[0];
+        if (!isUrl) {
+          const normales = candidatos.filter((c) => c.duracion >= 60 && c.duracion <= 600);
+          elegido = normales.length
+            ? normales.reduce((a, b) => (a.duracion <= b.duracion ? a : b))
+            : candidatos.reduce((a, b) => (a.duracion <= b.duracion ? a : b));
+        }
+
+        resolve({ url: elegido.url, title: elegido.title || query, author: elegido.author || 'YouTube' });
       },
     );
   });
@@ -169,8 +192,11 @@ client.once('ready', () => {
   client.lavalink.init({ id: client.user.id, username: client.user.username });
 });
 
+let lavalinkListo = false;
+
 client.lavalink.nodeManager.on('connect', (node) => {
   console.log(`🎧 Conectado al nodo de Lavalink "${node.id}"`);
+  lavalinkListo = true;
 });
 
 client.lavalink.nodeManager.on('error', (node, error) => {
@@ -182,6 +208,10 @@ client.on('messageCreate', async (message) => {
   const args = message.content.slice(PREFIX.length).trim().split(/ +/);
   const command = args.shift().toLowerCase();
   const guildId = message.guild.id;
+
+  if (!lavalinkListo) {
+    return message.reply('⏳ Dame un segundo, me estoy terminando de conectar. Probá de nuevo en unos segundos.');
+  }
 
   try {
     if (command === 'play' || command === 'p') {
