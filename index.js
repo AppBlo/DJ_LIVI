@@ -96,7 +96,7 @@ client.lavalink = new LavalinkManager({
     username: 'DJ LIVI',
   },
   playerOptions: {
-    defaultSearchPlatform: 'ytsearch',
+    defaultSearchPlatform: 'ytmsearch',
     onEmptyQueue: {
       destroyAfterMs: 5 * 60 * 1000, // se va del canal si queda solo 5 min
     },
