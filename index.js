@@ -136,7 +136,7 @@ client.on('messageCreate', async (message) => {
   try {
     if (command === 'play' || command === 'p') {
       const query = args.join(' ');
-      if (!query) return message.reply('Decime qué querés escuchar. Ej: `!play nombre de la canción` o un link de YouTube.');
+      if (!query) return message.reply('Decime qué querés escuchar. Ej: `!play nombre de la canción`, un link de YouTube, o un link de Spotify.');
       const voiceChannel = message.member.voice.channel;
       if (!voiceChannel) return message.reply('Primero conectate a un canal de voz.');
 
@@ -151,29 +151,67 @@ client.on('messageCreate', async (message) => {
       }
       if (!player.connected) await player.connect();
 
-      const resolved = await resolveWithYtDlp(query);
-      if (!resolved) {
-        return message.reply('No encontré ningún resultado para eso (o YouTube lo está bloqueando).');
-      }
+      const isSpotify = /open\.spotify\.com\/(track|album|playlist|artist)/i.test(query);
+      const tracksToQueue = [];
 
-      const result = await player.search({ query: resolved.url }, message.author);
-      if (!result || !result.tracks?.length) {
-        return message.reply('Encontré el tema pero Lavalink no pudo cargar el audio. Probá con otra búsqueda.');
-      }
+      if (isSpotify) {
+        // Spotify no da audio: usamos Lavalink (LavaSrc) solo para sacar
+        // título/artista real de cada tema, y resolvemos el audio nosotros
+        // mismos con yt-dlp (igual que con una búsqueda de texto normal).
+        const spotifyResult = await player.search({ query }, message.author);
+        if (!spotifyResult || !spotifyResult.tracks?.length) {
+          return message.reply('No pude leer esa canción/playlist de Spotify.');
+        }
 
-      const track = result.tracks[0];
-      // Nos quedamos con el título/autor reales que sacó yt-dlp (más prolijo
-      // que lo que a veces trae el link crudo).
-      track.info.title = resolved.title;
-      track.info.author = resolved.author;
+        const metaTracks = spotifyResult.tracks.slice(0, 25); // tope para no demorar una eternidad
+        if (metaTracks.length > 1) {
+          await message.reply(`🔎 Encontré ${metaTracks.length} temas en Spotify. Buscando el audio real de cada uno, puede tardar un poco...`);
+        }
+
+        for (const metaTrack of metaTracks) {
+          const resolved = await resolveWithYtDlp(`${metaTrack.info.title} ${metaTrack.info.author}`);
+          if (!resolved) continue;
+          const audioResult = await player.search({ query: resolved.url }, message.author);
+          if (!audioResult?.tracks?.length) continue;
+          const track = audioResult.tracks[0];
+          // Preferimos el título/artista reales de Spotify (más prolijos que
+          // el título del video de YouTube que encontramos).
+          track.info.title = metaTrack.info.title;
+          track.info.author = metaTrack.info.author;
+          tracksToQueue.push(track);
+        }
+
+        if (!tracksToQueue.length) {
+          return message.reply('No pude conseguir el audio de ninguno de esos temas (YouTube los está bloqueando).');
+        }
+      } else {
+        const resolved = await resolveWithYtDlp(query);
+        if (!resolved) {
+          return message.reply('No encontré ningún resultado para eso (o YouTube lo está bloqueando).');
+        }
+
+        const result = await player.search({ query: resolved.url }, message.author);
+        if (!result || !result.tracks?.length) {
+          return message.reply('Encontré el tema pero Lavalink no pudo cargar el audio. Probá con otra búsqueda.');
+        }
+
+        const track = result.tracks[0];
+        track.info.title = resolved.title;
+        track.info.author = resolved.author;
+        tracksToQueue.push(track);
+      }
 
       if (isDjEnabled(guildId)) {
-        const introText = dj.buildIntroText(track.info);
+        const introText = dj.buildIntroText(tracksToQueue[0].info);
         await queueDjIntro(player, introText, message.author);
       }
 
-      player.queue.add(track);
-      message.reply(`✅ Agregado a la cola: **${track.info.title}**`);
+      player.queue.add(tracksToQueue);
+      message.reply(
+        tracksToQueue.length > 1
+          ? `✅ Agregados **${tracksToQueue.length}** temas a la cola.`
+          : `✅ Agregado a la cola: **${tracksToQueue[0].info.title}**`,
+      );
 
       if (!player.playing && !player.paused) await player.play();
     }
