@@ -256,12 +256,54 @@ client.lavalink.on('trackStart', (player, track) => {
   }
 });
 
-client.lavalink.on('trackError', (player, track, payload) => {
+client.lavalink.on('trackError', async (player, track, payload) => {
   const channel = client.channels.cache.get(player.textChannelId);
-  console.error('Error de reproducción:', payload?.exception?.message || payload);
-  channel?.send(
-    `❌ No pude reproducir **${track?.info?.title || 'ese tema'}** (posiblemente bloqueado por YouTube). Probá con otra búsqueda.`,
-  );
+  console.error('Error de reproducción:', track?.info?.title, payload?.exception?.message || payload);
+
+  const yaProbadoSoundcloud = track?.userData?.intento === 'soundcloud';
+  const yaProbadoYtDlp = track?.userData?.intento === 'ytdlp';
+
+  // Nivel 2: SoundCloud (silencioso, sin avisar en el chat).
+  if (!yaProbadoSoundcloud && !yaProbadoYtDlp) {
+    try {
+      const fallbackResult = await player.search(
+        { query: `scsearch:${track.info.title} ${track.info.author}` },
+        track.requester,
+      );
+      if (fallbackResult?.tracks?.length) {
+        const fallbackTrack = fallbackResult.tracks[0];
+        fallbackTrack.userData = { ...fallbackTrack.userData, intento: 'soundcloud' };
+        player.queue.add(fallbackTrack, 0);
+        if (!player.playing) await player.play();
+        return;
+      }
+    } catch (err) {
+      console.error('Error en el respaldo de SoundCloud:', err);
+    }
+  }
+
+  // Nivel 3, último recurso: yt-dlp + cookies (silencioso también).
+  if (!yaProbadoYtDlp) {
+    try {
+      const resolved = await resolveWithYtDlp(`${track.info.title} ${track.info.author}`);
+      if (resolved) {
+        const ytDlpResult = await player.search({ query: resolved.url }, track.requester);
+        if (ytDlpResult?.tracks?.length) {
+          const fallbackTrack = ytDlpResult.tracks[0];
+          fallbackTrack.info.title = resolved.title;
+          fallbackTrack.info.author = resolved.author;
+          fallbackTrack.userData = { ...fallbackTrack.userData, intento: 'ytdlp' };
+          player.queue.add(fallbackTrack, 0);
+          if (!player.playing) await player.play();
+          return;
+        }
+      }
+    } catch (err) {
+      console.error('Error en el respaldo de yt-dlp:', err);
+    }
+  }
+
+  channel?.send(`❌ No pude reproducir **${track?.info?.title || 'ese tema'}** por ningún medio. Probá con otra búsqueda.`);
 });
 
 client.lavalink.on('trackStuck', (player, track) => {
