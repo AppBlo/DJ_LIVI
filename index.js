@@ -260,30 +260,11 @@ client.lavalink.on('trackError', async (player, track, payload) => {
   const channel = client.channels.cache.get(player.textChannelId);
   console.error('Error de reproducción:', track?.info?.title, payload?.exception?.message || payload);
 
-  const yaProbadoSoundcloud = track?.userData?.intento === 'soundcloud';
   const yaProbadoYtDlp = track?.userData?.intento === 'ytdlp';
+  const yaProbadoSoundcloud = track?.userData?.intento === 'soundcloud';
 
-  // Nivel 2: SoundCloud (silencioso, sin avisar en el chat).
-  if (!yaProbadoSoundcloud && !yaProbadoYtDlp) {
-    try {
-      const fallbackResult = await player.search(
-        { query: `scsearch:${track.info.title} ${track.info.author}` },
-        track.requester,
-      );
-      if (fallbackResult?.tracks?.length) {
-        const fallbackTrack = fallbackResult.tracks[0];
-        fallbackTrack.userData = { ...fallbackTrack.userData, intento: 'soundcloud' };
-        player.queue.add(fallbackTrack, 0);
-        if (!player.playing) await player.play();
-        return;
-      }
-    } catch (err) {
-      console.error('Error en el respaldo de SoundCloud:', err);
-    }
-  }
-
-  // Nivel 3, último recurso: yt-dlp + cookies (silencioso también).
-  if (!yaProbadoYtDlp) {
+  // Nivel 2: yt-dlp + cookies (silencioso, sin avisar en el chat).
+  if (!yaProbadoYtDlp && !yaProbadoSoundcloud) {
     try {
       const resolved = await resolveWithYtDlp(`${track.info.title} ${track.info.author}`);
       if (resolved) {
@@ -300,6 +281,25 @@ client.lavalink.on('trackError', async (player, track, payload) => {
       }
     } catch (err) {
       console.error('Error en el respaldo de yt-dlp:', err);
+    }
+  }
+
+  // Nivel 3, último recurso: SoundCloud (silencioso también).
+  if (!yaProbadoSoundcloud) {
+    try {
+      const fallbackResult = await player.search(
+        { query: `scsearch:${track.info.title} ${track.info.author}` },
+        track.requester,
+      );
+      if (fallbackResult?.tracks?.length) {
+        const fallbackTrack = fallbackResult.tracks[0];
+        fallbackTrack.userData = { ...fallbackTrack.userData, intento: 'soundcloud' };
+        player.queue.add(fallbackTrack, 0);
+        if (!player.playing) await player.play();
+        return;
+      }
+    } catch (err) {
+      console.error('Error en el respaldo de SoundCloud:', err);
     }
   }
 
