@@ -5,10 +5,38 @@
 require('dotenv').config();
 const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 const { LavalinkManager } = require('lavalink-client');
+const { execFile } = require('child_process');
 const dj = require('./dj');
 
 const PREFIX = process.env.PREFIX || '!';
 const FLOWERY_VOICE = process.env.FLOWERY_VOICE || 'Sabela';
+
+/**
+ * Usa yt-dlp (instalado en el sistema) para resolver una búsqueda o link de
+ * YouTube a una URL de audio directa reproducible. Evitamos así el
+ * youtube-source de Lavalink, que puede quedar roto cuando YouTube cambia
+ * su reproductor (yt-dlp se actualiza mucho más seguido contra esto).
+ *
+ * Devuelve { url, title, author } o null si no encontró nada.
+ */
+function resolveWithYtDlp(query) {
+  return new Promise((resolve) => {
+    const isUrl = /^https?:\/\//i.test(query);
+    const target = isUrl ? query : `ytsearch1:${query}`;
+
+    execFile(
+      'yt-dlp',
+      [target, '-f', 'bestaudio', '--no-playlist', '--print', '%(webpage_url)s|||%(title)s|||%(uploader)s'],
+      { timeout: 20000, maxBuffer: 1024 * 1024 },
+      (err, stdout) => {
+        if (err || !stdout?.trim()) return resolve(null);
+        const [url, title, author] = stdout.trim().split('|||');
+        if (!url) return resolve(null);
+        resolve({ url, title: title || query, author: author || 'YouTube' });
+      },
+    );
+  });
+}
 
 const client = new Client({
   intents: [
@@ -98,7 +126,7 @@ client.on('messageCreate', async (message) => {
   try {
     if (command === 'play' || command === 'p') {
       const query = args.join(' ');
-      if (!query) return message.reply('Decime qué querés escuchar. Ej: `!play nombre de la canción` o un link de Spotify/YouTube.');
+      if (!query) return message.reply('Decime qué querés escuchar. Ej: `!play nombre de la canción` o un link de YouTube.');
       const voiceChannel = message.member.voice.channel;
       if (!voiceChannel) return message.reply('Primero conectate a un canal de voz.');
 
@@ -113,27 +141,29 @@ client.on('messageCreate', async (message) => {
       }
       if (!player.connected) await player.connect();
 
-      const result = await player.search({ query }, message.author);
-
-      if (!result || !result.tracks?.length) {
-        return message.reply('No encontré ningún resultado para eso.');
+      const resolved = await resolveWithYtDlp(query);
+      if (!resolved) {
+        return message.reply('No encontré ningún resultado para eso (o YouTube lo está bloqueando).');
       }
 
-      const isPlaylist = !!result.playlist;
-      const tracksToAdd = isPlaylist ? result.tracks : [result.tracks[0]];
+      const result = await player.search({ query: resolved.url }, message.author);
+      if (!result || !result.tracks?.length) {
+        return message.reply('Encontré el tema pero Lavalink no pudo cargar el audio. Probá con otra búsqueda.');
+      }
+
+      const track = result.tracks[0];
+      // Nos quedamos con el título/autor reales que sacó yt-dlp (más prolijo
+      // que lo que a veces trae el link crudo).
+      track.info.title = resolved.title;
+      track.info.author = resolved.author;
 
       if (isDjEnabled(guildId)) {
-        // Anunciamos solo el primer tema (si es playlist, no locuteamos cada uno).
-        const introText = dj.buildIntroText(tracksToAdd[0].info);
+        const introText = dj.buildIntroText(track.info);
         await queueDjIntro(player, introText, message.author);
       }
 
-      player.queue.add(tracksToAdd);
-      message.reply(
-        isPlaylist
-          ? `✅ Agregados **${tracksToAdd.length}** temas de la playlist.`
-          : `✅ Agregado a la cola: **${tracksToAdd[0].info.title}**`,
-      );
+      player.queue.add(track);
+      message.reply(`✅ Agregado a la cola: **${track.info.title}**`);
 
       if (!player.playing && !player.paused) await player.play();
     }
