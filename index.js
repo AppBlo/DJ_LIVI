@@ -126,11 +126,12 @@ async function queueDjIntro(player, track, requester) {
   try {
     const frase = await djAI.generarFraseConIA({ title: cleanTitle(track.title), author: track.author });
     const filepath = await elevenlabs.generarAudioElevenLabs(frase);
-    const result = await player.search({ query: filepath }, requester);
+    const result = await player.search({ query: filepath, source: 'local' }, requester);
     if (result?.tracks?.length) {
       player.queue.add(result.tracks[0]);
       return;
     }
+    console.error('DJ con IA/ElevenLabs: Lavalink no devolvió tracks para el archivo local', filepath, JSON.stringify(result));
   } catch (err) {
     console.error('DJ con IA/ElevenLabs falló, uso el respaldo (Flowery):', err.message);
   }
