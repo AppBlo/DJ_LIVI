@@ -31,7 +31,7 @@ function resolveWithYtDlp(query) {
         '-f', 'bestaudio',
         '--no-playlist',
         '--cookies', require('path').join(__dirname, 'cookies.txt'),
-        '--print', '%(webpage_url)s|||%(title)s|||%(uploader)s',
+        '--print', '%(url)s|||%(title)s|||%(uploader)s',
       ],
       { timeout: 20000, maxBuffer: 1024 * 1024 },
       (err, stdout, stderr) => {
