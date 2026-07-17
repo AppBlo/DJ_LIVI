@@ -493,8 +493,15 @@ client.lavalink.on('trackStuck', (player, track) => {
   channel?.send(`⚠️ **${track?.info?.title || 'El tema'}** se trabó, lo salteo.`);
 });
 
+const ultimoQueueEndEnviado = new Map(); // guildId -> timestamp
+
 client.lavalink.on('queueEnd', (player) => {
   if (guildsReintentando.has(player.guildId)) return; // falso positivo, hay un reintento en curso
+  const ahora = Date.now();
+  const ultimo = ultimoQueueEndEnviado.get(player.guildId) ?? 0;
+  if (ahora - ultimo < 5000) return; // evita avisos duplicados muy seguidos
+  ultimoQueueEndEnviado.set(player.guildId, ahora);
+
   const channel = client.channels.cache.get(player.textChannelId);
   channel?.send('🏁 Se terminó la cola.');
 });
