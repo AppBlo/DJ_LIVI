@@ -59,16 +59,18 @@ function isDjEnabled(guildId) {
 /**
  * Pide a Lavalink (vía Flowery TTS) el audio del texto dado, y lo agrega
  * a la cola justo antes del track real.
+ *
+ * Usamos el link HTTP directo de la API de Flowery (en vez del atajo
+ * "ftts://") porque ese atajo rompe con texto que tiene espacios, comas o
+ * paréntesis (bug conocido de cómo LavaSrc arma la URI internamente).
  */
 async function queueDjIntro(player, text, requester) {
-  const result = await player.search(
-    {
-      query: text,
-      source: 'ftts',
-      extraQueryUrlParams: new URLSearchParams({ voice: FLOWERY_VOICE }),
-    },
-    requester,
-  );
+  const url = `https://api.flowery.pw/v1/tts?${new URLSearchParams({
+    text,
+    voice: FLOWERY_VOICE,
+  })}`;
+
+  const result = await player.search({ query: url }, requester);
   if (result?.tracks?.length) {
     player.queue.add(result.tracks[0]);
   }
@@ -212,6 +214,19 @@ client.lavalink.on('trackStart', (player, track) => {
   if (track.info.sourceName !== 'flowerytts') {
     channel?.send(`🎶 Sonando ahora: **${track.info.title}** — ${track.info.author}`);
   }
+});
+
+client.lavalink.on('trackError', (player, track, payload) => {
+  const channel = client.channels.cache.get(player.textChannelId);
+  console.error('Error de reproducción:', payload?.exception?.message || payload);
+  channel?.send(
+    `❌ No pude reproducir **${track?.info?.title || 'ese tema'}** (posiblemente bloqueado por YouTube). Probá con otra búsqueda.`,
+  );
+});
+
+client.lavalink.on('trackStuck', (player, track) => {
+  const channel = client.channels.cache.get(player.textChannelId);
+  channel?.send(`⚠️ **${track?.info?.title || 'El tema'}** se trabó, lo salteo.`);
 });
 
 client.lavalink.on('queueEnd', (player) => {
