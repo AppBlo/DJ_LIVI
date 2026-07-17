@@ -113,42 +113,54 @@ function isDjEnabled(guildId) {
   return djEnabledByGuild.get(guildId) ?? true; // por defecto: activado
 }
 
+// Cuántas canciones le quedan de "silencio" al DJ en cada servidor antes de
+// volver a hablar (variamos entre 2 y 4 para que no sea siempre igual).
+const djSilencioRestante = new Map();
+
+function debeHablarElDJ(guildId) {
+  const restante = djSilencioRestante.get(guildId) ?? 0;
+  if (restante <= 0) {
+    djSilencioRestante.set(guildId, Math.floor(Math.random() * 3) + 2); // 2 a 4
+    return true;
+  }
+  djSilencioRestante.set(guildId, restante - 1);
+  return false;
+}
+
 /**
- * Arma y encola el anuncio del DJ para el track dado.
+ * Arma el clip de audio del DJ (para una canción puntual o para presentar
+ * una tanda/playlist) y devuelve el Track de Lavalink listo para encolar
+ * (o null si ni el camino principal ni el de respaldo funcionaron).
  *
- * Camino principal: Claude arma una frase acorde a la onda real de la
- * canción (con una etiqueta de emoción), y ElevenLabs la locuta con una voz
- * natural. Si cualquiera de los dos pasos falla (créditos agotados, error de
- * red, etc.), caemos en silencio al camino de respaldo: una frase fija de
- * plantilla, locutada con Flowery TTS (gratis, siempre disponible).
+ * Camino principal: Claude arma la frase (con chistes internos y
+ * dedicatorias si corresponde) + ElevenLabs la locuta con voz natural.
+ * Respaldo silencioso: frase de plantilla fija + Flowery TTS (gratis).
  */
-async function queueDjIntro(player, track, requester) {
+async function armarTrackDelDJ(player, requester, { tipo, datos }) {
   try {
-    const frase = await djAI.generarFraseConIA({ title: cleanTitle(track.title), author: track.author });
+    const frase =
+      tipo === 'playlist' ? await djAI.generarIntroPlaylist(datos) : await djAI.generarFraseConIA(datos);
     const filepath = await elevenlabs.generarAudioElevenLabs(frase);
     const result = await player.search({ query: filepath, source: 'local' }, requester);
-    if (result?.tracks?.length) {
-      player.queue.add(result.tracks[0]);
-      return;
-    }
-    console.error('DJ con IA/ElevenLabs: Lavalink no devolvió tracks para el archivo local', filepath, JSON.stringify(result));
+    if (result?.tracks?.length) return result.tracks[0];
+    console.error('DJ con IA/ElevenLabs: Lavalink no devolvió tracks para el archivo local', filepath);
   } catch (err) {
     console.error('DJ con IA/ElevenLabs falló, uso el respaldo (Flowery):', err.message);
   }
 
   try {
-    const textoRespaldo = dj.buildIntroText({ title: cleanTitle(track.title), author: track.author });
+    const textoRespaldo =
+      tipo === 'playlist' ? dj.buildWelcomeText() : dj.buildIntroText({ title: datos.title, author: datos.author });
     const url = `https://api.flowery.pw/v1/tts?${new URLSearchParams({
       text: textoRespaldo,
       voice: FLOWERY_VOICE,
     })}`;
     const result = await player.search({ query: url }, requester);
-    if (result?.tracks?.length) {
-      player.queue.add(result.tracks[0]);
-    }
+    if (result?.tracks?.length) return result.tracks[0];
   } catch (err) {
     console.error('El respaldo del DJ (Flowery) también falló:', err);
   }
+  return null;
 }
 
 client.once('ready', () => {
@@ -210,11 +222,30 @@ client.on('messageCreate', async (message) => {
         tracksToQueue[0].info.title = query.replace(/\b\w/g, (c) => c.toUpperCase());
       }
 
-      if (isDjEnabled(guildId)) {
-        await queueDjIntro(player, tracksToQueue[0].info, message.author);
+      const miembrosCanal = voiceChannel.members
+        .filter((m) => !m.user.bot)
+        .map((m) => m.displayName);
+
+      const itemsParaEncolar = [];
+      for (let i = 0; i < tracksToQueue.length; i++) {
+        const track = tracksToQueue[i];
+        if (isDjEnabled(guildId) && debeHablarElDJ(guildId)) {
+          const esInicioDePlaylist = isPlaylist && i === 0;
+          const djTrack = await armarTrackDelDJ(player, message.author, {
+            tipo: esInicioDePlaylist ? 'playlist' : 'cancion',
+            datos: esInicioDePlaylist
+              ? {
+                  titulos: tracksToQueue.slice(0, 8).map((t) => `${cleanTitle(t.info.title)} - ${t.info.author}`),
+                  miembrosCanal,
+                }
+              : { title: cleanTitle(track.info.title), author: track.info.author, miembrosCanal },
+          });
+          if (djTrack) itemsParaEncolar.push(djTrack);
+        }
+        itemsParaEncolar.push(track);
       }
 
-      player.queue.add(tracksToQueue);
+      player.queue.add(itemsParaEncolar);
       message.reply(
         tracksToQueue.length > 1
           ? `✅ Agregados **${tracksToQueue.length}** temas a la cola.`
