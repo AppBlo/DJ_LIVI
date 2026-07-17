@@ -2,7 +2,7 @@
 // Usa Claude (Anthropic) para que el DJ arme una frase acorde a la onda real
 // de la canción (en vez de una plantilla fija), con una etiqueta de emoción
 // para que ElevenLabs la locute con el tono correcto. También maneja los
-// "chistes internos" del grupo y las dedicatorias random a gente del canal.
+// apodos del grupo, los chistes internos y las dedicatorias random.
 
 const EMOTION_TAGS = [
   '[entusiasmado]',
@@ -14,21 +14,37 @@ const EMOTION_TAGS = [
   '[alegre]',
 ];
 
-// Chistes internos del grupo: si el autor de la canción matchea (case
-// insensitive, "incluye"), el DJ va a mencionar esa frase siempre.
-// Para agregar más, sumá una línea acá: 'nombre del artista en minúscula': 'frase'.
-const ARTIST_JOKES = {
-  'sabrina carpenter': 'la señora del Pablo',
+// Apodos: mapeamos el nombre que aparece en Discord (en minúscula) a las
+// formas que el DJ puede usar para referirse a esa persona (varía random).
+const APODOS = {
+  'argamol (pablo i.)': ['Pablo', 'Pablito'],
+  'alabaster1698': ['Emma', 'El Emma', 'Emmanuel', 'Emmanuel Alvaro José', 'Emazilia'],
+  'despreet': ['Bastian', 'El Basty'],
 };
 
-// Probabilidad de que el DJ le dedique la canción/tanda a alguien random del canal.
-const PROBABILIDAD_DEDICATORIA = 0.2; // 1 de cada 5, aprox.
+function apodoDe(nombreDiscord) {
+  const opciones = APODOS[nombreDiscord?.toLowerCase()];
+  if (!opciones) return nombreDiscord;
+  return opciones[Math.floor(Math.random() * opciones.length)];
+}
+
+// Chistes internos por artista. "base" siempre aplica; "conPablo" se suma
+// solo si detectamos que Pablo está conectado al canal en ese momento.
+const ARTIST_JOKES = {
+  'sabrina carpenter': {
+    base: 'Hay un chiste interno del grupo con esta cantante: es "la señora de Pablo" / "la mujer de Pablo". Es obligatorio tocar este chiste de alguna forma, pero variá cómo lo decís cada vez, no repitas siempre la misma frase — a veces decí directamente que es la señora del Pablo, otras veces tirale un piropo tipo "qué mujer" en relación a él, otras veces un comentario gracioso distinto sobre que a Pablo le encanta esta cantante. Elegí una forma distinta cada vez, variá las palabras.',
+    conPablo: 'Pablo está conectado en el canal de voz ahora mismo, así que podés dirigirte directo a él con el chiste si querés.',
+  },
+};
 
 function buscarChisteDeArtista(author) {
   if (!author) return null;
   const key = Object.keys(ARTIST_JOKES).find((k) => author.toLowerCase().includes(k));
   return key ? ARTIST_JOKES[key] : null;
 }
+
+// Probabilidad de que el DJ le dedique la canción/tanda a alguien random del canal.
+const PROBABILIDAD_DEDICATORIA = 0.2; // 1 de cada 5, aprox.
 
 function elegirDedicatoria(miembrosCanal) {
   if (!miembrosCanal?.length) return null;
@@ -63,15 +79,16 @@ async function llamarClaude(prompt) {
 
 /**
  * Frase para anunciar UNA canción puntual.
- * @param {{title: string, author: string, miembrosCanal?: string[]}} datos
+ * @param {{title: string, author: string, miembrosCanal?: string[], pabloPresente?: boolean}} datos
  */
-async function generarFraseConIA({ title, author, miembrosCanal = [] }) {
+async function generarFraseConIA({ title, author, miembrosCanal = [], pabloPresente = false }) {
   const chiste = buscarChisteDeArtista(author);
   const dedicatoria = elegirDedicatoria(miembrosCanal);
 
   let extra = '';
   if (chiste) {
-    extra += `\nDato importante y obligatorio: en esta frase tenés que mencionar, tal cual, este chiste interno del grupo: "${chiste}".`;
+    extra += `\n${chiste.base}`;
+    if (pabloPresente && chiste.conPablo) extra += `\n${chiste.conPablo}`;
   }
   if (dedicatoria) {
     extra += `\nDedicale esta canción a "${dedicatoria}" de forma random y divertida (ej: "esta va para vos, ${dedicatoria}").`;
@@ -112,4 +129,4 @@ ${titulos.map((t) => `- ${t}`).join('\n')}`;
   return llamarClaude(prompt);
 }
 
-module.exports = { generarFraseConIA, generarIntroPlaylist };
+module.exports = { generarFraseConIA, generarIntroPlaylist, apodoDe };

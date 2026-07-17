@@ -222,9 +222,11 @@ client.on('messageCreate', async (message) => {
         tracksToQueue[0].info.title = query.replace(/\b\w/g, (c) => c.toUpperCase());
       }
 
-      const miembrosCanal = voiceChannel.members
+      const miembrosRaw = voiceChannel.members
         .filter((m) => !m.user.bot)
         .map((m) => m.displayName);
+      const miembrosCanal = miembrosRaw.map((n) => djAI.apodoDe(n));
+      const pabloPresente = miembrosRaw.some((n) => n.toLowerCase() === 'argamol (pablo i.)');
 
       const itemsParaEncolar = [];
       for (let i = 0; i < tracksToQueue.length; i++) {
@@ -238,7 +240,12 @@ client.on('messageCreate', async (message) => {
                   titulos: tracksToQueue.slice(0, 8).map((t) => `${cleanTitle(t.info.title)} - ${t.info.author}`),
                   miembrosCanal,
                 }
-              : { title: cleanTitle(track.info.title), author: track.info.author, miembrosCanal },
+              : {
+                  title: cleanTitle(track.info.title),
+                  author: track.info.author,
+                  miembrosCanal,
+                  pabloPresente,
+                },
           });
           if (djTrack) itemsParaEncolar.push(djTrack);
         }
