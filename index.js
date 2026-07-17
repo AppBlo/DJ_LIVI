@@ -314,6 +314,30 @@ client.on('messageCreate', async (message) => {
       message.reply({ embeds: [embed] });
     }
 
+    else if (command === 'pregunta' || command === 'preguntar') {
+      const texto = args.join(' ');
+      if (!texto) return message.reply('Preguntame algo, ej: `!pregunta qué onda con esta fiesta`');
+
+      const player = client.lavalink.getPlayer(guildId);
+      if (!player) return message.reply('Primero tengo que estar conectado a un canal de voz — pedí una canción con `!play` antes.');
+
+      try {
+        const respuesta = await djAI.responderPregunta(texto);
+        const filepath = await elevenlabs.generarAudioElevenLabs(respuesta);
+        const result = await player.search({ query: filepath, source: 'local' }, message.author);
+        if (result?.tracks?.length) {
+          player.queue.add(result.tracks[0], 0);
+          message.reply('🎙️ Ahí te contesto, apenas termine lo que está sonando.');
+          if (!player.playing && !player.paused) await player.play();
+        } else {
+          message.reply('❌ No pude generar la respuesta.');
+        }
+      } catch (err) {
+        console.error('Error respondiendo la pregunta:', err);
+        message.reply('❌ Algo falló al responder.');
+      }
+    }
+
     else if (command === 'dj') {
       const mode = args[0]?.toLowerCase();
       if (mode === 'on') {
@@ -437,6 +461,46 @@ client.lavalink.on('queueEnd', (player) => {
 client.lavalink.on('playerDisconnect', (player) => {
   const channel = client.channels.cache.get(player.textChannelId);
   channel?.send('👋 Me desconecté del canal de voz.');
+});
+
+// Reaccionamos, a veces (no siempre), cuando alguien entra o sale del canal
+// de voz donde está tocando el bot. Se encola para sonar apenas termine el
+// tema actual, sin interrumpir nada.
+const PROBABILIDAD_REACCION_CANAL = 0.35;
+const ultimaReaccionCanal = new Map(); // guildId -> timestamp, para no saturar
+
+client.on('voiceStateUpdate', async (oldState, newState) => {
+  const guildId = newState.guild?.id || oldState.guild?.id;
+  if (!guildId || !isDjEnabled(guildId)) return;
+
+  const player = client.lavalink.getPlayer(guildId);
+  if (!player) return; // el bot no está conectado a nada en este server
+
+  const canalDelBot = player.voiceChannelId;
+  const seUnio = !oldState.channelId && newState.channelId === canalDelBot;
+  const seFue = oldState.channelId === canalDelBot && newState.channelId !== canalDelBot;
+  if (!seUnio && !seFue) return;
+
+  const miembro = seUnio ? newState.member : oldState.member;
+  if (!miembro || miembro.user.bot) return;
+
+  const ultima = ultimaReaccionCanal.get(guildId) ?? 0;
+  if (Date.now() - ultima < 60_000) return; // no más de una reacción por minuto
+  if (Math.random() > PROBABILIDAD_REACCION_CANAL) return; // no siempre reacciona
+
+  ultimaReaccionCanal.set(guildId, Date.now());
+
+  try {
+    const persona = djAI.apodoDe(miembro.displayName);
+    const frase = await djAI.generarReaccionCanal({ persona, evento: seUnio ? 'entro' : 'se_fue' });
+    const filepath = await elevenlabs.generarAudioElevenLabs(frase);
+    const result = await player.search({ query: filepath, source: 'local' }, client.user);
+    if (result?.tracks?.length) {
+      player.queue.add(result.tracks[0], 0);
+    }
+  } catch (err) {
+    console.error('Error generando la reacción de canal:', err.message);
+  }
 });
 
 client.login(process.env.DISCORD_TOKEN);

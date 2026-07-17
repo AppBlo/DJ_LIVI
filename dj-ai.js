@@ -129,4 +129,32 @@ ${titulos.map((t) => `- ${t}`).join('\n')}`;
   return llamarClaude(prompt);
 }
 
-module.exports = { generarFraseConIA, generarIntroPlaylist, apodoDe };
+/**
+ * Comentario cortito cuando alguien se une o se va del canal de voz.
+ * @param {{persona: string, evento: 'entro'|'se_fue'}} datos
+ */
+async function generarReaccionCanal({ persona, evento }) {
+  const accion = evento === 'entro' ? 'se acaba de conectar al canal de voz' : 'se acaba de ir del canal de voz';
+  const prompt = `Sos un DJ animando una fiesta de amigos en Chile, español informal y cercano.
+${persona} ${accion}. Hacé UN comentario bien cortito (máximo 12 palabras), gracioso o cálido, mencionando a esa persona por su nombre.
+Empezá con una etiqueta de emoción entre corchetes elegida de: ${EMOTION_TAGS.join(', ')}.
+Devolvé SOLO la etiqueta + el comentario, nada más.`;
+
+  return llamarClaude(prompt);
+}
+
+/**
+ * Respuesta del DJ a una pregunta directa de alguien del grupo.
+ * @param {string} pregunta
+ */
+async function responderPregunta(pregunta) {
+  const prompt = `Sos el DJ de una fiesta de amigos en Chile, hablás en español informal y con onda, como si contestaras en vivo por el micrófono entre canción y canción.
+Alguien te hizo esta pregunta: "${pregunta}"
+Respondé de forma breve (máximo 25 palabras), con onda y personalidad de DJ.
+Empezá con una etiqueta de emoción entre corchetes elegida de: ${EMOTION_TAGS.join(', ')}.
+Devolvé SOLO la etiqueta + la respuesta, nada más.`;
+
+  return llamarClaude(prompt);
+}
+
+module.exports = { generarFraseConIA, generarIntroPlaylist, generarReaccionCanal, responderPregunta, apodoDe };
