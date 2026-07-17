@@ -151,7 +151,7 @@ client.on('messageCreate', async (message) => {
       }
       if (!player.connected) await player.connect();
 
-      const isSpotify = /open\.spotify\.com\/(track|album|playlist|artist)/i.test(query);
+      const isSpotify = /open\.spotify\.com\/(?:intl-\w+\/)?(track|album|playlist|artist)/i.test(query);
       const tracksToQueue = [];
 
       if (isSpotify) {
