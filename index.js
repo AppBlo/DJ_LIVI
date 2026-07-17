@@ -318,8 +318,19 @@ client.on('messageCreate', async (message) => {
       const texto = args.join(' ');
       if (!texto) return message.reply('Preguntame algo, ej: `!pregunta qué onda con esta fiesta`');
 
-      const player = client.lavalink.getPlayer(guildId);
-      if (!player) return message.reply('Primero tengo que estar conectado a un canal de voz — pedí una canción con `!play` antes.');
+      const voiceChannel = message.member.voice.channel;
+      if (!voiceChannel) return message.reply('Primero conectate a un canal de voz.');
+
+      let player = client.lavalink.getPlayer(guildId);
+      if (!player) {
+        player = client.lavalink.createPlayer({
+          guildId,
+          voiceChannelId: voiceChannel.id,
+          textChannelId: message.channel.id,
+          selfDeaf: true,
+        });
+      }
+      if (!player.connected) await player.connect();
 
       try {
         const respuesta = await djAI.responderPregunta(texto);
