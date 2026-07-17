@@ -26,7 +26,13 @@ function resolveWithYtDlp(query) {
 
     execFile(
       'yt-dlp',
-      [target, '-f', 'bestaudio', '--no-playlist', '--print', '%(webpage_url)s|||%(title)s|||%(uploader)s'],
+      [
+        target,
+        '-f', 'bestaudio',
+        '--no-playlist',
+        '--cookies', require('path').join(__dirname, 'cookies.txt'),
+        '--print', '%(webpage_url)s|||%(title)s|||%(uploader)s',
+      ],
       { timeout: 20000, maxBuffer: 1024 * 1024 },
       (err, stdout) => {
         if (err || !stdout?.trim()) return resolve(null);
