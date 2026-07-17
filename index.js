@@ -12,6 +12,23 @@ const PREFIX = process.env.PREFIX || '!';
 const FLOWERY_VOICE = process.env.FLOWERY_VOICE || 'Sabela';
 
 /**
+ * Limpia los agregados típicos de los títulos de YouTube ("Video Oficial",
+ * "Official Music Video", "Lyrics", etc.) para que el DJ y los mensajes del
+ * chat digan solo el nombre real de la canción.
+ */
+function cleanTitle(title) {
+  if (!title) return title;
+  return title
+    .replace(
+      /[([]?\s*((official|oficial)\s*(music\s*)?video|video\s*(official|oficial)|official\s*audio|audio\s*(official|oficial)|lyric[s]?\s*video|letra\/?\s*lyrics?|official\s*lyric\s*video|visualizer)\s*[)\]]?/gi,
+      '',
+    )
+    .replace(/\s*[|\-–]\s*$/, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+/**
  * Usa yt-dlp (instalado en el sistema) para resolver una búsqueda o link de
  * YouTube a una URL de audio directa reproducible. Evitamos así el
  * youtube-source de Lavalink, que puede quedar roto cuando YouTube cambia
@@ -164,7 +181,8 @@ client.on('messageCreate', async (message) => {
       const tracksToQueue = isPlaylist ? result.tracks.slice(0, 25) : [result.tracks[0]];
 
       if (isDjEnabled(guildId)) {
-        const introText = dj.buildIntroText(tracksToQueue[0].info);
+        const cleanInfo = { ...tracksToQueue[0].info, title: cleanTitle(tracksToQueue[0].info.title) };
+        const introText = dj.buildIntroText(cleanInfo);
         await queueDjIntro(player, introText, message.author);
       }
 
@@ -172,7 +190,7 @@ client.on('messageCreate', async (message) => {
       message.reply(
         tracksToQueue.length > 1
           ? `✅ Agregados **${tracksToQueue.length}** temas a la cola.`
-          : `✅ Agregado a la cola: **${tracksToQueue[0].info.title}**`,
+          : `✅ Agregado a la cola: **${cleanTitle(tracksToQueue[0].info.title)}**`,
       );
 
       if (!player.playing && !player.paused) await player.play();
@@ -248,20 +266,50 @@ client.on('messageCreate', async (message) => {
   }
 });
 
+// Guardamos qué servidores están en medio de un reintento silencioso, para
+// no mandar el aviso de "se terminó la cola" en falso durante ese proceso.
+const guildsReintentando = new Set();
+
 client.lavalink.on('trackStart', (player, track) => {
   const channel = client.channels.cache.get(player.textChannelId);
-  // No anunciamos los clips del propio DJ (source flowery), solo canciones reales.
-  if (track.info.sourceName !== 'flowerytts') {
-    channel?.send(`🎶 Sonando ahora: **${track.info.title}** — ${track.info.author}`);
-  }
+  // No anunciamos los clips del propio DJ, ni los reintentos silenciosos
+  // (solo el primer intento de cada canción real).
+  if (track.info.sourceName === 'flowerytts') return;
+  if (track.userData?.intento) return;
+  channel?.send(`🎶 Sonando ahora: **${cleanTitle(track.info.title)}** — ${track.info.author}`);
 });
 
 client.lavalink.on('trackError', async (player, track, payload) => {
   const channel = client.channels.cache.get(player.textChannelId);
   console.error('Error de reproducción:', track?.info?.title, payload?.exception?.message || payload);
 
+  guildsReintentando.add(player.guildId);
+  const terminarReintento = () => guildsReintentando.delete(player.guildId);
+
+  const yaProbadoYtMusic = track?.userData?.intento === 'ytmusic';
   const yaProbadoYtDlp = track?.userData?.intento === 'ytdlp';
   const yaProbadoSoundcloud = track?.userData?.intento === 'soundcloud';
+
+  // Nivel 1.5: otra fuente dentro de YouTube (YouTube Music), por si el
+  // video puntual que encontró está bloqueado pero el mismo tema en YT Music no.
+  if (!yaProbadoYtMusic && !yaProbadoYtDlp && !yaProbadoSoundcloud) {
+    try {
+      const ytMusicResult = await player.search(
+        { query: `ytmsearch:${track.info.title} ${track.info.author}` },
+        track.requester,
+      );
+      if (ytMusicResult?.tracks?.length) {
+        const fallbackTrack = ytMusicResult.tracks[0];
+        fallbackTrack.userData = { ...fallbackTrack.userData, intento: 'ytmusic' };
+        player.queue.add(fallbackTrack, 0);
+        if (!player.playing) await player.play();
+        terminarReintento();
+        return;
+      }
+    } catch (err) {
+      console.error('Error en el respaldo de YouTube Music:', err);
+    }
+  }
 
   // Nivel 2: yt-dlp + cookies (silencioso, sin avisar en el chat).
   if (!yaProbadoYtDlp && !yaProbadoSoundcloud) {
@@ -276,6 +324,7 @@ client.lavalink.on('trackError', async (player, track, payload) => {
           fallbackTrack.userData = { ...fallbackTrack.userData, intento: 'ytdlp' };
           player.queue.add(fallbackTrack, 0);
           if (!player.playing) await player.play();
+          terminarReintento();
           return;
         }
       }
@@ -296,6 +345,7 @@ client.lavalink.on('trackError', async (player, track, payload) => {
         fallbackTrack.userData = { ...fallbackTrack.userData, intento: 'soundcloud' };
         player.queue.add(fallbackTrack, 0);
         if (!player.playing) await player.play();
+        terminarReintento();
         return;
       }
     } catch (err) {
@@ -303,7 +353,8 @@ client.lavalink.on('trackError', async (player, track, payload) => {
     }
   }
 
-  channel?.send(`❌ No pude reproducir **${track?.info?.title || 'ese tema'}** por ningún medio. Probá con otra búsqueda.`);
+  terminarReintento();
+  channel?.send(`❌ No pude reproducir **${cleanTitle(track?.info?.title) || 'ese tema'}** por ningún medio. Probá con otra búsqueda.`);
 });
 
 client.lavalink.on('trackStuck', (player, track) => {
@@ -312,6 +363,7 @@ client.lavalink.on('trackStuck', (player, track) => {
 });
 
 client.lavalink.on('queueEnd', (player) => {
+  if (guildsReintentando.has(player.guildId)) return; // falso positivo, hay un reintento en curso
   const channel = client.channels.cache.get(player.textChannelId);
   channel?.send('🏁 Se terminó la cola.');
 });
