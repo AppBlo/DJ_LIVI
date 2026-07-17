@@ -34,8 +34,12 @@ function resolveWithYtDlp(query) {
         '--print', '%(webpage_url)s|||%(title)s|||%(uploader)s',
       ],
       { timeout: 20000, maxBuffer: 1024 * 1024 },
-      (err, stdout) => {
-        if (err || !stdout?.trim()) return resolve(null);
+      (err, stdout, stderr) => {
+        if (err || !stdout?.trim()) {
+          console.error('[yt-dlp] Error:', err?.message || 'sin stdout');
+          if (stderr) console.error('[yt-dlp] stderr:', stderr);
+          return resolve(null);
+        }
         const [url, title, author] = stdout.trim().split('|||');
         if (!url) return resolve(null);
         resolve({ url, title: title || query, author: author || 'YouTube' });
