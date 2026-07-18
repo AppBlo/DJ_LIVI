@@ -13,6 +13,14 @@ const elevenlabs = require('./elevenlabs');
 const PREFIX = process.env.PREFIX || '!';
 const FLOWERY_VOICE = process.env.FLOWERY_VOICE || 'Sabela';
 
+// ID del bot de Betty — Livi escucha sus embeds para comentar canciones ajenas.
+// Podés encontrarlo activando el modo desarrollador en Discord (clic derecho → Copiar ID).
+const BETTY_BOT_ID = process.env.BETTY_BOT_ID || '';
+
+// Cada cuántos minutos Livi puede tirar un comentario espontáneo (rango random).
+const COMENTARIO_ESPONTANEO_MIN_MS = 6 * 60 * 1000;  // 6 min mínimo
+const COMENTARIO_ESPONTANEO_MAX_MS = 14 * 60 * 1000; // 14 min máximo
+
 /**
  * Limpia los agregados típicos de los títulos de YouTube ("Video Oficial",
  * "Official Music Video", "Lyrics", etc.) para que el DJ y los mensajes del
@@ -186,6 +194,53 @@ async function armarTrackDelDJ(player, requester, { tipo, datos }) {
   return null;
 }
 
+// Prompts para comentarios espontáneos de Livi (sin canción específica).
+const PROMPTS_ESPONTANEOS = [
+  'Comentá brevemente el ambiente de la fiesta, algo sobre lo que viene, o tirá un dato curioso de música.',
+  'Hacé un comentario corto sobre la noche, la energía del momento, o algo que se venga.',
+  'Tirá un dato musical interesante o un comentario random sobre el ambiente.',
+  'Decí algo breve sobre cómo va la noche o sobre los que están escuchando.',
+];
+
+/**
+ * Genera y encola un comentario espontáneo de Livi en el canal de voz activo
+ * de un servidor. Solo actúa si hay gente en el canal.
+ */
+async function comentarioEspontaneo(guildId) {
+  if (!isDjEnabled(guildId)) return;
+  const player = client.lavalink.getPlayer(guildId);
+  if (!player?.connected) return;
+
+  const canal = client.channels.cache.get(player.voiceChannelId);
+  const hayGente = canal?.members?.filter((m) => !m.user.bot).size > 0;
+  if (!hayGente) return;
+
+  try {
+    const promptBase = PROMPTS_ESPONTANEOS[Math.floor(Math.random() * PROMPTS_ESPONTANEOS.length)];
+    const miembros = canal.members.filter((m) => !m.user.bot).map((m) => djAI.apodoDe(m.displayName));
+    const mencionGente = miembros.length ? `Hay gente en el canal: ${miembros.join(', ')}.` : '';
+
+    const frase = await djAI.llamarClaudeEspontaneo(promptBase, mencionGente);
+    const filepath = await elevenlabs.generarAudioElevenLabs(frase);
+    const result = await player.search({ query: filepath, source: 'local' }, client.user);
+    if (result?.tracks?.length) {
+      player.queue.add(result.tracks[0]);
+    }
+  } catch (err) {
+    console.error('Error en comentario espontáneo:', err.message);
+  }
+}
+
+/** Programa el próximo comentario espontáneo con un intervalo random. */
+function programarComentarioEspontaneo(guildId) {
+  const delay = COMENTARIO_ESPONTANEO_MIN_MS +
+    Math.random() * (COMENTARIO_ESPONTANEO_MAX_MS - COMENTARIO_ESPONTANEO_MIN_MS);
+  setTimeout(async () => {
+    await comentarioEspontaneo(guildId);
+    programarComentarioEspontaneo(guildId); // re-agenda para la próxima
+  }, delay);
+}
+
 client.once('ready', () => {
   console.log(`✅ Conectado como ${client.user.tag}`);
   elevenlabs.limpiarArchivosViejos();
@@ -204,6 +259,76 @@ client.lavalink.nodeManager.on('error', (node, error) => {
 });
 
 client.on('messageCreate', async (message) => {
+  // ── Detección de Betty Bot ──────────────────────────────────────────────────
+  // Cuando Betty anuncia una canción nueva, Livi la detecta y comenta.
+  if (
+    message.author.bot &&
+    BETTY_BOT_ID &&
+    message.author.id === BETTY_BOT_ID &&
+    message.embeds?.length > 0
+  ) {
+    const embed = message.embeds[0];
+    const title = embed.title || embed.description;
+    // Betty muestra artista en el campo "description" del embed cuando hay título separado,
+    // o como segunda línea. Probamos ambas formas.
+    const author = embed.description || embed.fields?.[0]?.value;
+
+    if (title && isDjEnabled(message.guildId)) {
+      // Sacamos quién pidió la canción del footer ("Requested by Nombre")
+      const footerText = embed.footer?.text || '';
+      const requesterMatch = footerText.match(/Requested by (.+)/i);
+      const requesterRaw = requesterMatch?.[1] || null;
+
+      const player = client.lavalink.getPlayer(message.guildId);
+      const voiceChannel = player?.voiceChannelId
+        ? client.channels.cache.get(player.voiceChannelId)
+        : null;
+      const miembrosRaw = voiceChannel?.members?.filter((m) => !m.user.bot).map((m) => m.displayName) || [];
+      const miembrosCanal = miembrosRaw.map((n) => djAI.apodoDe(n));
+      const pabloPresente = miembrosRaw.some((n) => n.toLowerCase() === 'argamol (pablo i.)');
+
+      // Solo comenta de vez en cuando (no cada canción, para no saturar)
+      if (debeHablarElDJ(message.guildId)) {
+        try {
+          // Si Livi no está en un canal de voz todavía, se une al canal donde está la gente
+          let liviPlayer = player;
+          if (!liviPlayer?.connected) {
+            // Busca el canal de voz donde hay miembros
+            const guild = message.guild;
+            const canalVoz = guild.channels.cache.find(
+              (c) => c.isVoiceBased?.() && c.members?.filter((m) => !m.user.bot).size > 0
+            );
+            if (canalVoz) {
+              liviPlayer = client.lavalink.createPlayer({
+                guildId: message.guildId,
+                voiceChannelId: canalVoz.id,
+                textChannelId: message.channel.id,
+                selfDeaf: true,
+              });
+              await liviPlayer.connect();
+              // Arrancar timer de comentarios espontáneos para este servidor
+              programarComentarioEspontaneo(message.guildId);
+            }
+          }
+
+          if (liviPlayer?.connected) {
+            const djTrack = await armarTrackDelDJ(liviPlayer, client.user, {
+              tipo: 'cancion',
+              datos: { title: cleanTitle(title), author, miembrosCanal, pabloPresente },
+            });
+            if (djTrack) {
+              liviPlayer.queue.add(djTrack);
+              if (!liviPlayer.playing && !liviPlayer.paused) await liviPlayer.play();
+            }
+          }
+        } catch (err) {
+          console.error('Error comentando canción de Betty:', err.message);
+        }
+      }
+    }
+    return; // no procesar como comando
+  }
+
   if (message.author.bot || !message.content.startsWith(PREFIX)) return;
   const args = message.content.slice(PREFIX.length).trim().split(/ +/);
   const command = args.shift().toLowerCase();

@@ -148,13 +148,29 @@ Devolvé SOLO la etiqueta + el comentario, nada más.`;
  * @param {string} pregunta
  */
 async function responderPregunta(pregunta) {
-  const prompt = `Sos el DJ de una fiesta de amigos en Chile, hablás en español informal y con onda, como si contestaras en vivo por el micrófono entre canción y canción.
-Alguien te hizo esta pregunta: "${pregunta}"
-Respondé de forma breve (máximo 25 palabras), con onda y personalidad de DJ.
+  const prompt = `Sos Livi, una asistente de voz presente en un canal de Discord. Hablás en español, con un tono amable, claro y moderadamente formal — cercano pero no coloquial, sin jerga de DJ ni expresiones de fiesta.
+Alguien te hizo esta pregunta o comentario: "${pregunta}"
+Respondé de forma breve y directa (máximo 30 palabras). Si la pregunta es sobre música, podés dar contexto útil (año, artista, género, dato interesante). Si es una pregunta general, respondé con precisión.
 Empezá con una etiqueta de emoción entre corchetes elegida de: ${EMOTION_TAGS.join(', ')}.
 Devolvé SOLO la etiqueta + la respuesta, nada más.`;
 
   return llamarClaude(prompt);
 }
 
-module.exports = { generarFraseConIA, generarIntroPlaylist, generarReaccionCanal, responderPregunta, apodoDe };
+/**
+ * Comentario espontáneo sin canción específica (ambiente, vibe, dato random).
+ * @param {string} promptBase - instrucción base sobre qué comentar
+ * @param {string} contextoGente - string con los nombres de quien está en el canal
+ */
+async function llamarClaudeEspontaneo(promptBase, contextoGente = '') {
+  const prompt = `Sos Livi, DJ animando una fiesta de amigos en Chile. Hablás en español informal y cercano.
+${contextoGente}
+${promptBase}
+Escribí UNA sola frase corta (máximo 15 palabras).
+Empezá con una etiqueta de emoción entre corchetes elegida de: ${EMOTION_TAGS.join(', ')}.
+Devolvé SOLO la etiqueta + la frase, nada más.`;
+
+  return llamarClaude(prompt);
+}
+
+module.exports = { generarFraseConIA, generarIntroPlaylist, generarReaccionCanal, responderPregunta, llamarClaudeEspontaneo, apodoDe };
