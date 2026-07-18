@@ -258,90 +258,94 @@ client.lavalink.nodeManager.on('error', (node, error) => {
   console.error(`❌ Error en el nodo de Lavalink "${node.id}":`, error.message);
 });
 
-
-// IDs de mensajes de Betty ya procesados para no comentar dos veces.
-const bettyMensajesProcesados = new Set();
-
-async function procesarMensajeBetty(msg) {
-  if (!BETTY_BOT_ID || msg.author?.id !== BETTY_BOT_ID) return;
-  if (!msg.embeds?.length) return;
-  if (bettyMensajesProcesados.has(msg.id)) return;
-
-  const embed = msg.embeds[0];
-  const title = embed.title;
-  const author = embed.description;
-  if (!title || !author) return;
-  if (author.includes(':warn_') || author.toLowerCase().includes('no more songs')) return;
-  if (!isDjEnabled(msg.guildId)) return;
-
-  bettyMensajesProcesados.add(msg.id);
-  if (bettyMensajesProcesados.size > 100) {
-    bettyMensajesProcesados.delete(bettyMensajesProcesados.values().next().value);
-  }
-
-  if (!debeHablarElDJ(msg.guildId)) return;
-
-  try {
-    let liviPlayer = client.lavalink.getPlayer(msg.guildId);
-    if (!liviPlayer?.connected) {
-      const canalVoz = msg.guild.channels.cache.find(
-        (c) => c.isVoiceBased?.() && c.members?.filter((m) => !m.user.bot).size > 0
-      );
-      if (!canalVoz) return;
-
-      liviPlayer = client.lavalink.createPlayer({
-        guildId: msg.guildId,
-        voiceChannelId: canalVoz.id,
-        textChannelId: msg.channel.id,
-        selfDeaf: true,
-      });
-      await liviPlayer.connect();
-
-      try {
-        const miembrosCanal = canalVoz.members
-          .filter((m) => !m.user.bot)
-          .map((m) => djAI.apodoDe(m.displayName));
-        const saludoFrase = await djAI.generarSaludo(miembrosCanal);
-        const saludoFile = await elevenlabs.generarAudioElevenLabs(saludoFrase);
-        const saludoResult = await liviPlayer.search({ query: saludoFile, source: 'local' }, client.user);
-        if (saludoResult?.tracks?.length) {
-          liviPlayer.queue.add(saludoResult.tracks[0]);
-          if (!liviPlayer.playing && !liviPlayer.paused) await liviPlayer.play();
-        }
-      } catch (err) {
-        console.error('Error en saludo inicial:', err.message);
-      }
-
-      programarComentarioEspontaneo(msg.guildId);
-    }
-
-    const voiceChannel = client.channels.cache.get(liviPlayer.voiceChannelId);
-    const miembrosRaw = voiceChannel?.members?.filter((m) => !m.user.bot).map((m) => m.displayName) || [];
-    const miembrosCanal = miembrosRaw.map((n) => djAI.apodoDe(n));
-    const pabloPresente = miembrosRaw.some((n) => n.toLowerCase() === 'argamol (pablo i.)');
-
-    const djTrack = await armarTrackDelDJ(liviPlayer, client.user, {
-      tipo: 'cancion',
-      datos: { title: cleanTitle(title), author, miembrosCanal, pabloPresente },
-    });
-    if (djTrack) {
-      liviPlayer.queue.add(djTrack);
-      if (!liviPlayer.playing && !liviPlayer.paused) await liviPlayer.play();
-    }
-  } catch (err) {
-    console.error('Error comentando cancion de Betty:', err.message);
-  }
-}
-
-// Betty edita su mensaje para mostrar la cancion — escuchamos ambos eventos.
-client.on('messageUpdate', async (oldMsg, newMsg) => {
-  await procesarMensajeBetty(newMsg);
-});
-
 client.on('messageCreate', async (message) => {
-  await procesarMensajeBetty(message);
+  // ── Detección de Betty Bot ──────────────────────────────────────────────────
+  // Cuando Betty anuncia una canción nueva, Livi la detecta y comenta.
+  if (
+    message.author.bot &&
+    BETTY_BOT_ID &&
+    message.author.id === BETTY_BOT_ID &&
+    message.embeds?.length > 0
+  ) {
+    const embed = message.embeds[0];
+    const title = embed.title || embed.description;
+    // Betty muestra artista en el campo "description" del embed cuando hay título separado,
+    // o como segunda línea. Probamos ambas formas.
+    const author = embed.description || embed.fields?.[0]?.value;
 
-  if (message.author.bot || !message.content.startsWith(PREFIX)) return;
+    if (title && isDjEnabled(message.guildId)) {
+      // Sacamos quién pidió la canción del footer ("Requested by Nombre")
+      const footerText = embed.footer?.text || '';
+      const requesterMatch = footerText.match(/Requested by (.+)/i);
+      const requesterRaw = requesterMatch?.[1] || null;
+
+      const player = client.lavalink.getPlayer(message.guildId);
+      const voiceChannel = player?.voiceChannelId
+        ? client.channels.cache.get(player.voiceChannelId)
+        : null;
+      const miembrosRaw = voiceChannel?.members?.filter((m) => !m.user.bot).map((m) => m.displayName) || [];
+      const miembrosCanal = miembrosRaw.map((n) => djAI.apodoDe(n));
+      const pabloPresente = miembrosRaw.some((n) => n.toLowerCase() === 'argamol (pablo i.)');
+
+      // Solo comenta de vez en cuando (no cada canción, para no saturar)
+      if (debeHablarElDJ(message.guildId)) {
+        try {
+          // Si Livi no está en un canal de voz todavía, se une al canal donde está la gente
+          let liviPlayer = player;
+          if (!liviPlayer?.connected) {
+            // Busca el canal de voz donde hay miembros
+            const guild = message.guild;
+            const canalVoz = guild.channels.cache.find(
+              (c) => c.isVoiceBased?.() && c.members?.filter((m) => !m.user.bot).size > 0
+            );
+            if (canalVoz) {
+              liviPlayer = client.lavalink.createPlayer({
+                guildId: message.guildId,
+                voiceChannelId: canalVoz.id,
+                textChannelId: message.channel.id,
+                selfDeaf: true,
+              });
+              await liviPlayer.connect();
+
+              // Saludo inicial al conectarse
+              try {
+                const miembrosCanal = canalVoz.members
+                  .filter((m) => !m.user.bot)
+                  .map((m) => djAI.apodoDe(m.displayName));
+                const saludoFrase = await djAI.generarSaludo(miembrosCanal);
+                const saludoFile = await elevenlabs.generarAudioElevenLabs(saludoFrase);
+                const saludoResult = await liviPlayer.search({ query: saludoFile, source: 'local' }, client.user);
+                if (saludoResult?.tracks?.length) {
+                  liviPlayer.queue.add(saludoResult.tracks[0]);
+                  if (!liviPlayer.playing && !liviPlayer.paused) await liviPlayer.play();
+                }
+              } catch (err) {
+                console.error('Error en saludo inicial:', err.message);
+              }
+
+              // Arrancar timer de comentarios espontáneos para este servidor
+              programarComentarioEspontaneo(message.guildId);
+            }
+          }
+
+          if (liviPlayer?.connected) {
+            const djTrack = await armarTrackDelDJ(liviPlayer, client.user, {
+              tipo: 'cancion',
+              datos: { title: cleanTitle(title), author, miembrosCanal, pabloPresente },
+            });
+            if (djTrack) {
+              liviPlayer.queue.add(djTrack);
+              if (!liviPlayer.playing && !liviPlayer.paused) await liviPlayer.play();
+            }
+          }
+        } catch (err) {
+          console.error('Error comentando canción de Betty:', err.message);
+        }
+      }
+    }
+    return; // no procesar como comando
+  }
+
   if (message.author.bot || !message.content.startsWith(PREFIX)) return;
   const args = message.content.slice(PREFIX.length).trim().split(/ +/);
   const command = args.shift().toLowerCase();
