@@ -172,6 +172,7 @@ Devolvé SOLO la etiqueta + el saludo, nada más.`;
   return llamarClaude(prompt);
 }
 
+/**
  * @param {string} promptBase - instrucción base sobre qué comentar
  * @param {string} contextoGente - string con los nombres de quien está en el canal
  */
