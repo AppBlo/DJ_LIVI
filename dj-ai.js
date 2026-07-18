@@ -158,7 +158,20 @@ Devolvé SOLO la etiqueta + la respuesta, nada más.`;
 }
 
 /**
- * Comentario espontáneo sin canción específica (ambiente, vibe, dato random).
+ * Saludo inicial cuando Livi se conecta por primera vez al canal.
+ * @param {string[]} miembros - nombres de la gente en el canal
+ */
+async function generarSaludo(miembros) {
+  const lista = miembros.length ? miembros.join(', ') : 'todos';
+  const prompt = `Sos Livi, DJ de una fiesta de amigos en Chile, español informal y cercano.
+Acabás de conectarte al canal de voz. Saludá a la gente que está ahí: ${lista}.
+Hacé UN saludo corto y con onda (máximo 15 palabras), mencionando a alguno o todos por nombre si son pocos.
+Empezá con una etiqueta de emoción entre corchetes elegida de: ${EMOTION_TAGS.join(', ')}.
+Devolvé SOLO la etiqueta + el saludo, nada más.`;
+
+  return llamarClaude(prompt);
+}
+
  * @param {string} promptBase - instrucción base sobre qué comentar
  * @param {string} contextoGente - string con los nombres de quien está en el canal
  */
@@ -173,4 +186,4 @@ Devolvé SOLO la etiqueta + la frase, nada más.`;
   return llamarClaude(prompt);
 }
 
-module.exports = { generarFraseConIA, generarIntroPlaylist, generarReaccionCanal, responderPregunta, llamarClaudeEspontaneo, apodoDe };
+module.exports = { generarFraseConIA, generarIntroPlaylist, generarReaccionCanal, responderPregunta, llamarClaudeEspontaneo, generarSaludo, apodoDe };

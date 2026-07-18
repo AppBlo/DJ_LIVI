@@ -17,8 +17,8 @@ const FLOWERY_VOICE = process.env.FLOWERY_VOICE || 'Sabela';
 // Podés encontrarlo activando el modo desarrollador en Discord (clic derecho → Copiar ID).
 const BETTY_BOT_ID = process.env.BETTY_BOT_ID || '';
 
-// Cada cuántos minutos Livi puede tirar un comentario espontáneo (rango random).
-const COMENTARIO_ESPONTANEO_MIN_MS = 6 * 60 * 1000;  // 6 min mínimo
+// Cada cuánto tiempo Livi tira un comentario espontáneo (rango random).
+const COMENTARIO_ESPONTANEO_MIN_MS = 1 * 60 * 1000;  // 1 min mínimo
 const COMENTARIO_ESPONTANEO_MAX_MS = 14 * 60 * 1000; // 14 min máximo
 
 /**
@@ -129,7 +129,7 @@ client.lavalink = new LavalinkManager({
   playerOptions: {
     defaultSearchPlatform: 'ytmsearch',
     onEmptyQueue: {
-      destroyAfterMs: 5 * 60 * 1000, // se va del canal si queda solo 5 min
+      destroyAfterMs: 2 * 60 * 60 * 1000, // se va del canal si queda 2 horas sin cola
     },
   },
 });
@@ -306,6 +306,23 @@ client.on('messageCreate', async (message) => {
                 selfDeaf: true,
               });
               await liviPlayer.connect();
+
+              // Saludo inicial al conectarse
+              try {
+                const miembrosCanal = canalVoz.members
+                  .filter((m) => !m.user.bot)
+                  .map((m) => djAI.apodoDe(m.displayName));
+                const saludoFrase = await djAI.generarSaludo(miembrosCanal);
+                const saludoFile = await elevenlabs.generarAudioElevenLabs(saludoFrase);
+                const saludoResult = await liviPlayer.search({ query: saludoFile, source: 'local' }, client.user);
+                if (saludoResult?.tracks?.length) {
+                  liviPlayer.queue.add(saludoResult.tracks[0]);
+                  if (!liviPlayer.playing && !liviPlayer.paused) await liviPlayer.play();
+                }
+              } catch (err) {
+                console.error('Error en saludo inicial:', err.message);
+              }
+
               // Arrancar timer de comentarios espontáneos para este servidor
               programarComentarioEspontaneo(message.guildId);
             }
